@@ -1,0 +1,136 @@
+name: Build executables (Bun)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. 0.1.0)"
+        required: true
+      name:
+        description: "Release name/title"
+        required: false
+      prerelease:
+        description: "Mark as prerelease"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64-modern
+            os: ubuntu-latest
+          - target: bun-windows-x64-modern
+            os: windows-latest
+          - target: bun-darwin-x64
+            os: macos-15-intel
+          - target: bun-darwin-arm64
+            os: macos-latest
+
+    env:
+      TARGET: ${{ matrix.target }}
+      PLATFORM: ${{ contains(matrix.target, 'windows') && 'windows-x64' || (contains(matrix.target, 'linux') && 'linux-x64' || (contains(matrix.target, 'darwin') && (contains(matrix.target, 'arm64') && 'darwin-arm64' || 'darwin-x64') )) }}
+      VERSION: ${{ github.event.inputs.tag }}
+      BIN_EXT: ${{ contains(matrix.target, 'windows') && '.exe' || '' }}
+      OUTFILE: udp-ws-bridge
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build executable
+        run: |
+          mkdir -p dist
+          bun build main.ts --compile --outfile dist/${OUTFILE}-${VERSION}${BIN_EXT}
+          if [[ "${TARGET}" != *"windows"* ]]; then
+            chmod +x "dist/${OUTFILE}-${VERSION}${BIN_EXT}"
+          fi
+        shell: bash
+
+      - name: Remove macOS quarantine
+        if: contains(matrix.target, 'darwin')
+        run: |
+          xattr -dr com.apple.quarantine "dist/${OUTFILE}-${VERSION}${BIN_EXT}"
+        shell: bash
+
+      - name: Add Windows icon
+        if: contains(matrix.target, 'windows') && runner.os == 'Windows'
+        run: |
+          if (Test-Path "icon.ico") {
+            winget install ElectronCommunity.rcedit `
+              --silent `
+              --accept-package-agreements `
+              --accept-source-agreements
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+            rcedit "dist\${{ env.OUTFILE }}-${{ env.VERSION }}${{ env.BIN_EXT }}" --set-icon icon.ico
+          }
+        shell: pwsh
+
+      - name: Create archive (Windows)
+        if: contains(matrix.target, 'windows')
+        run: |
+          Compress-Archive -Path "dist\${{ env.OUTFILE }}-${{ env.VERSION }}${{ env.BIN_EXT }}" -DestinationPath "dist\${{ env.OUTFILE }}-${{ env.PLATFORM }}.zip"
+        shell: pwsh
+
+      - name: Create archive (Linux)
+        if: contains(matrix.target, 'linux')
+        run: |
+          cd dist
+          zip "${OUTFILE}-${PLATFORM}.zip" "${OUTFILE}-${VERSION}${BIN_EXT}"
+          cd ..
+        shell: bash
+
+      - name: Create archive (macOS)
+        if: contains(matrix.target, 'darwin')
+        run: |
+          cd dist
+          zip "${OUTFILE}-${PLATFORM}.zip" "${OUTFILE}-${VERSION}${BIN_EXT}"
+          cd ..
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: udp-ws-bridge-${{ env.VERSION }}-${{ env.PLATFORM }}
+          path: dist/${{ env.OUTFILE }}-${{ env.PLATFORM }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: |
+          find artifacts -type f -maxdepth 2 -print
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.name || github.event.inputs.tag }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          files: artifacts/*/*.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
