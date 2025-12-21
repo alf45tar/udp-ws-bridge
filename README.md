@@ -34,6 +34,11 @@ xattr -dr com.apple.quarantine udp-ws-bridge-<version>
 
 Then run the binary normally.
 
+### macOS: Run bridge in background
+**Tip for macOS users**: You can use **Shortcuts** or **Automator** to create a quick launcher app for the bridge.
+
+*Detailed setup instructions are out of scope here, but easily available by searching online or asking an AI assistant.*
+
 ## Requirements
 - Bun (https://bun.sh) — required only if you run from source or build manually. Prebuilt executables do not require Bun.
 
