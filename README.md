@@ -62,6 +62,7 @@ Repeat with targets you need:
 ## How it works
 - Listens on UDP port 6454 (Art-Net) and broadcasts to all connected WebSocket clients on port 8081.
 - WebSocket messages of type `udp-send` are forwarded to the target UDP address/port.
+- WebSocket messages of type `udp-send-no-echo` are forwarded to the target UDP address/port, but any echo/loopback of that exact message is filtered out.
 - Runs entirely on Bun (no extra deps).
 
 ## WebSocket JSON
@@ -95,7 +96,23 @@ Messages exchanged between the browser/client and the bridge are JSON strings.
   - `port`: destination UDP port.
   - `data`: byte array payload to send.
 
+- Outgoing from browser to UDP without echo (`udp-send-no-echo`):
+  ```json
+  {
+    "type": "udp-send-no-echo",
+    "address": "127.0.0.1",
+    "port": 6454,
+    "data": [0, 16, 32, 255]
+  }
+  ```
+  - `type`: fixed string `udp-send-no-echo`.
+  - `address`: destination IP.
+  - `port`: destination UDP port.
+  - `data`: byte array payload to send.
+  - **Purpose**: Sends a UDP message but filters out any echo/loopback of the same message. Useful when sending to localhost or broadcast addresses where the same message might be received back on the same socket.
+
 ### Notes
 - `data` is always an array of unsigned bytes (0–255). The bridge converts it to a `Buffer` when sending.
 - The UDP socket is bound to port `6454` and broadcast is enabled; adjust in `main.ts` if needed.
 - Invalid JSON or unknown `type` is logged and ignored by the bridge.
+- Echo filtering (for `udp-send-no-echo`) matches messages by exact data, address, and port, with a 100ms window.
