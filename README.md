@@ -49,21 +49,48 @@ bun run main.ts
 Then connect your browser/WebSocket client to `ws://localhost:8081`. Adjust `WS_PORT` or `UDP_PORT` in `main.ts` if needed.
 
 ## Build executables manually
-Compile self-contained binaries for different platforms:
+Compile self-contained binaries for your platforms.
+
+Linux (x64):
 ```bash
 bun build main.ts --compile --target=bun-linux-x64-modern --outfile dist/udp-ws-bridge
 ```
-Repeat with targets you need:
-- `--target=bun-linux-x64-modern`
-- `--target=bun-windows-x64-modern` (adds `.exe`)
-- `--target=bun-darwin-x64`
-- `--target=bun-darwin-arm64`
+
+Windows (x64):
+```bash
+bun build main.ts --compile --target=bun-windows-x64-modern --outfile dist/udp-ws-bridge.exe
+```
+
+macOS (x64):
+```bash
+bun build main.ts --compile --target=bun-darwin-x64 --outfile dist/udp-ws-bridge
+```
+
+macOS (arm64):
+```bash
+bun build main.ts --compile --target=bun-darwin-arm64 --outfile dist/udp-ws-bridge
+```
 
 ## How it works
 - Listens on UDP port 6454 (Art-Net) and broadcasts to all connected WebSocket clients on port 8081.
 - WebSocket messages of type `udp-send` are forwarded to the target UDP address/port.
 - WebSocket messages of type `udp-send-no-echo` are forwarded to the target UDP address/port, but any echo/loopback of that exact message is filtered out.
 - Runs entirely on Bun (no extra deps).
+
+## mDNS Name Registration
+The bridge automatically registers itself on the local network as **`udp-ws-bridge.local`**, making it easy to connect without needing to know the device's IP address.
+
+**Connect via:**
+- `ws://udp-ws-bridge.local:8081` from browsers and WebSocket clients on the same network
+- `ws://localhost:8081` when running locally
+
+**Supported platforms:**
+- macOS: Built-in support (Bonjour)
+- Linux: Requires `avahi-daemon` (typically pre-installed on most distributions)
+- Windows 10 & 11: Built-in support
+- Windows 7 & earlier: Requires Bonjour service or compatible alternative
+
+If mDNS resolution is unavailable on your network, fall back to the device's IP address (e.g., `ws://192.168.1.100:8081`).
 
 ## WebSocket JSON
 Messages exchanged between the browser/client and the bridge are JSON strings.
@@ -115,4 +142,4 @@ Messages exchanged between the browser/client and the bridge are JSON strings.
 - `data` is always an array of unsigned bytes (0–255). The bridge converts it to a `Buffer` when sending.
 - The UDP socket is bound to port `6454` and broadcast is enabled; adjust in `main.ts` if needed.
 - Invalid JSON or unknown `type` is logged and ignored by the bridge.
-- Echo filtering (for `udp-send-no-echo`) matches messages by exact data, address, and port, with a 100ms window.
+- Echo filtering (for `udp-send-no-echo`) matches messages by exact data with a 100ms window.

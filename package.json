@@ -1,13 +1,16 @@
 {
   "name": "udp-ws-bridge",
   "version": "0.2.0",
-  "type": "module",
+  "devDependencies": {
+    "bun-types": "latest"
+  },
   "scripts": {
     "dev": "bun run main.ts",
     "test": "bun test",
     "test:client": "bun run client.test.ts"
   },
-  "devDependencies": {
-    "bun-types": "latest"
+  "type": "module",
+  "dependencies": {
+    "multicast-dns": "^7.2.5"
   }
 }

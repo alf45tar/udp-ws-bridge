@@ -2,8 +2,10 @@
 // WS-UDP Bridge (Bun)
 // -------------------------
 import dgram from "node:dgram";
+import os from "node:os";
+import mdns from "multicast-dns";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const WS_PORT = 8081;
 const UDP_PORT = 6454; // Art-Net standard
 
@@ -51,15 +53,67 @@ udpSocket.on("message", (_msg, _rinfo) => {
 });
 
 // -------------------------
+// mDNS Hostname Resolution
+// -------------------------
+const mdnsServer = mdns();
+const hostname = "udp-ws-bridge.local";
+let mdnsRegistered = false;
+
+// Get local IP addresses
+function getLocalIPs() {
+  const ips: string[] = [];
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    if (!iface) continue;
+    for (const addr of iface) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        ips.push(addr.address);
+      }
+    }
+  }
+  return ips;
+}
+
+// Respond to mDNS queries for our hostname
+mdnsServer.on("query", (query) => {
+  const answers: any[] = [];
+
+  for (const question of query.questions) {
+    if (question.name === hostname && question.type === "A") {
+      const ips = getLocalIPs();
+      for (const ip of ips) {
+        answers.push({
+          name: hostname,
+          type: "A",
+          ttl: 120,
+          data: ip,
+        });
+        // Mark mDNS as registered once we respond to the first query
+        mdnsRegistered = true;
+      }
+    }
+  }
+
+  if (answers.length > 0) {
+    mdnsServer.respond(answers);
+  }
+});
+
+console.log(`[Bridge] mDNS hostname published: ${hostname}`);
+
+// -------------------------
 // WebSocket Server (Bun)
 // -------------------------
-console.log(`[Bridge] WebSocket bridge running on ws://localhost:${WS_PORT}`);
+console.log(`[Bridge] WebSocket bridge running on ws://${hostname}:${WS_PORT}`);
 
 Bun.serve({
   port: WS_PORT,
 
   fetch(req, server) {
-    if (server.upgrade(req)) {
+    const url = new URL(req.url);
+    const host = req.headers.get("host") || url.host;
+
+    if (server.upgrade(req, { data: { host } })) {
       return;
     }
     return new Response("WebSocket only", { status: 400 });
@@ -67,7 +121,8 @@ Bun.serve({
 
   websocket: {
     open(ws) {
-      console.log(`[Bridge] Browser connected`);
+      const connectedHost = ws.data?.host || `${hostname}:${WS_PORT}`;
+      console.log(`[Bridge] Browser connected from ${ws.remoteAddress} to ${connectedHost}`);
 
       // UDP → Browser
       const udpHandler = (msg: Buffer, rinfo: dgram.RemoteInfo) => {

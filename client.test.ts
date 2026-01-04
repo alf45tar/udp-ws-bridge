@@ -3,10 +3,12 @@
 // -------------------------
 
 import WSClient from "./client";
+import mdns from "multicast-dns";
 
 // Test configuration
-const TEST_WS_URL = "ws://localhost:8081";
 const TEST_TIMEOUT = 10000;
+const MDNS_HOSTNAME = "udp-ws-bridge.local";
+const WS_PORT = 8081;
 
 // Helper function to wait for a condition
 function waitFor(
@@ -38,6 +40,56 @@ async function runTests() {
 
   let testsPassed = 0;
   let testsFailed = 0;
+  let wsHostname = "localhost"; // Default fallback
+
+  // Test 0: mDNS Hostname Resolution
+  try {
+    console.log("[Test 0] Resolving mDNS hostname...");
+    const mdnsClient = mdns();
+
+    const resolved = await new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        mdnsClient.destroy();
+        resolve(false);
+      }, 3000);
+
+      mdnsClient.on("response", (response) => {
+        for (const answer of response.answers) {
+          if (answer.name === MDNS_HOSTNAME && answer.type === "A") {
+            console.log(`  Resolved ${MDNS_HOSTNAME} -> ${answer.data}`);
+            clearTimeout(timeout);
+            mdnsClient.destroy();
+            resolve(true);
+            return;
+          }
+        }
+      });
+
+      mdnsClient.query({
+        questions: [
+          {
+            name: MDNS_HOSTNAME,
+            type: "A",
+          },
+        ],
+      });
+    });
+
+    if (resolved) {
+      wsHostname = MDNS_HOSTNAME;
+      console.log("✓ PASSED: mDNS hostname resolved successfully\n");
+      testsPassed++;
+    } else {
+      console.log("✗ FAILED: Could not resolve mDNS hostname (falling back to localhost)\n");
+      testsFailed++;
+    }
+  } catch (err) {
+    console.log(`✗ FAILED: ${err} (falling back to localhost)\n`);
+    testsFailed++;
+  }
+
+  const TEST_WS_URL = `ws://${wsHostname}:${WS_PORT}`;
+  console.log(`Using WebSocket URL: ${TEST_WS_URL}\n`);
 
   // Test 1: Connection
   try {
