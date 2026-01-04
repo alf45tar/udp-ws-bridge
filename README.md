@@ -43,10 +43,25 @@ Then run the binary normally.
 - Bun (https://bun.sh) — required only if you run from source or build manually. Prebuilt executables do not require Bun.
 
 ## Run locally (dev)
+1) Install Bun (https://bun.sh) if you haven’t already.
+
+2) Install dependencies:
+```bash
+bun install
+```
+
+3) Start the bridge:
 ```bash
 bun run main.ts
 ```
-Then connect your browser/WebSocket client to `ws://localhost:8081`. Adjust `WS_PORT` or `UDP_PORT` in `main.ts` if needed.
+
+4) Connect your WebSocket client to `ws://localhost:8081` or `ws://upd-ws-bridge.local:8081` or run an end-to-end test in one go:
+```bash
+./run-demo.sh
+```
+This script starts the bridge, runs the client test, then stops the server. Requires executable bit (`chmod +x run-demo.sh`) and Bun installed.
+
+Ports are fixed in [main.ts](main.ts#L9-L10): `WS_PORT = 8081`, `UDP_PORT = 6454`. Edit those constants if you need different ports.
 
 ## Build executables manually
 Compile self-contained binaries for your platforms.

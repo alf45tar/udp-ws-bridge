@@ -50,6 +50,9 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install dependencies
+        run: bun install
+
       - name: Build executable
         run: |
           mkdir -p dist
