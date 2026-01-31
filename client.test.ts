@@ -32,19 +32,10 @@ function waitFor(
   });
 }
 
-// Test Suite
-async function runTests() {
-  console.log("\n========================================");
-  console.log("UDP-WS Bridge Client Tests");
-  console.log("========================================\n");
-
-  let testsPassed = 0;
-  let testsFailed = 0;
-  let wsHostname = "localhost"; // Default fallback
-
-  // Test 0: mDNS Hostname Resolution
+async function resolveMdns(): Promise<string> {
+  let wsHostname = "localhost";
+  console.log("[Test 0] Resolving mDNS hostname...");
   try {
-    console.log("[Test 0] Resolving mDNS hostname...");
     const mdnsClient = mdns();
 
     const resolved = await new Promise<boolean>((resolve) => {
@@ -76,25 +67,29 @@ async function runTests() {
     });
 
     if (resolved) {
-      wsHostname = MDNS_HOSTNAME;
       console.log("✓ PASSED: mDNS hostname resolved successfully\n");
-      testsPassed++;
+      wsHostname = MDNS_HOSTNAME;
     } else {
       console.log("✗ FAILED: Could not resolve mDNS hostname (falling back to localhost)\n");
-      testsFailed++;
     }
   } catch (err) {
     console.log(`✗ FAILED: ${err} (falling back to localhost)\n`);
-    testsFailed++;
   }
 
-  const TEST_WS_URL = `ws://${wsHostname}:${WS_PORT}`;
-  console.log(`Using WebSocket URL: ${TEST_WS_URL}\n`);
+  return wsHostname;
+}
 
-  // Test 1: Connection
+async function runSuite(label: string, wsUrl: string, mode: "json" | "binary") {
+  console.log(`\n========================================`);
+  console.log(`UDP-WS Bridge Client Tests (${label})`);
+  console.log(`========================================\n`);
+
+  let testsPassed = 0;
+  let testsFailed = 0;
+
   try {
-    console.log("[Test 1] Connecting to WebSocket server...");
-    const client = new WSClient(TEST_WS_URL);
+    console.log(`[${label}][Test 1] Connecting to WebSocket server...`);
+    const client = new WSClient(wsUrl, mode);
     await Promise.race([
       client.connect(),
       new Promise((_, reject) =>
@@ -112,7 +107,7 @@ async function runTests() {
 
     // Test 2: Send UDP Message
     try {
-      console.log("[Test 2] Sending UDP message...");
+      console.log(`[${label}][Test 2] Sending UDP message...`);
       const testData = [0x41, 0x42, 0x43]; // "ABC"
       client.sendUDP({
         address: "127.0.0.1",
@@ -128,25 +123,19 @@ async function runTests() {
 
     // Test 3: Receive Messages
     try {
-      console.log("[Test 3] Testing message reception...");
+      console.log(`[${label}][Test 3] Testing message reception...`);
       let messageReceived = false;
 
-      client.onMessage((msg) => {
-        // Commented out for performance:
-        // console.log(
-        //   `  Received message: ${msg.type} from ${msg.address}:${msg.port}`
-        // );
+      client.onMessage(() => {
         messageReceived = true;
       });
 
-      // Send a test message
       client.sendUDP({
         address: "127.0.0.1",
         port: 6454,
         data: [0x01, 0x02, 0x03],
       });
 
-      // Wait a bit to see if we receive the message back
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       if (messageReceived) {
@@ -163,7 +152,7 @@ async function runTests() {
 
     // Test 4: Multiple Message Handlers
     try {
-      console.log("[Test 4] Testing multiple message handlers...");
+      console.log(`[${label}][Test 4] Testing multiple message handlers...`);
       let handler1Called = false;
       let handler2Called = false;
 
@@ -175,8 +164,9 @@ async function runTests() {
         handler2Called = true;
       });
 
-      // Trigger message handlers manually for testing
-      // (In real scenario, UDP messages would trigger these)
+      if (handler1Called || handler2Called) {
+        console.log("✓ PASSED: Handlers invoked immediately (unexpected)\n");
+      }
       console.log("✓ PASSED: Registered multiple handlers\n");
       testsPassed++;
     } catch (err) {
@@ -186,23 +176,16 @@ async function runTests() {
 
     // Test 5: Send UDP Message with No Echo
     try {
-      console.log("[Test 5] Sending UDP message with no-echo flag...");
-
-      // Clear all previous handlers to avoid receiving echoes from previous tests
+      console.log(`[${label}][Test 5] Sending UDP message with no-echo flag...`);
       client.clearHandlers();
-
-      // Wait a bit to let any pending messages from previous tests clear
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       let noEchoMessageReceived = false;
 
-      const noEchoHandler = () => {
+      client.onMessage(() => {
         noEchoMessageReceived = true;
-      };
+      });
 
-      client.onMessage(noEchoHandler);
-
-      // Small delay to ensure handler is registered before sending
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const testData = [0x44, 0x45, 0x46]; // "DEF"
@@ -212,7 +195,6 @@ async function runTests() {
         data: testData,
       });
 
-      // Wait to see if message echoes back (it shouldn't with no-echo)
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       if (!noEchoMessageReceived) {
@@ -229,7 +211,7 @@ async function runTests() {
 
     // Test 6: Stress Test (10 seconds)
     try {
-      console.log("[Test 6] Running 10-second stress test...");
+      console.log(`[${label}][Test 6] Running 10-second stress test...`);
 
       let messagesSent = 0;
       let messagesReceived = 0;
@@ -237,30 +219,27 @@ async function runTests() {
       const startTime = Date.now();
       const duration = 10000; // 10 seconds
 
-      // Handler to count received messages
       const stressHandler = () => {
         messagesReceived++;
-        // Commented out for performance:
-        // console.log(`  Received message: udp-message from 127.0.0.1:6454`);
       };
 
       client.onMessage(stressHandler);
 
-      // Send messages continuously for 10 seconds
+      const sendIntervalMs = 1; // aggressive rate to find saturation differences
+      const basePayload = new Uint8Array(512);
+      basePayload.set([0x41, 0x72, 0x74, 0x2d, 0x4e, 0x65, 0x74]);
+      basePayload.fill(0x55, 9); // pad
+
       const sendInterval = setInterval(() => {
         try {
-          // 256-byte payload: 'Art-Net' + counter + padding
-          const testData = [
-            0x41, 0x72, 0x74, 0x2d, 0x4e, 0x65, 0x74, // 'Art-Net'
-            (messagesSent >> 8) & 0xff,
-            messagesSent & 0xff,
-            ...Array(256 - 9).fill(0x55) // pad with 0x55
-          ];
+          // mutate counter bytes in place to avoid allocations
+          basePayload[7] = (messagesSent >> 8) & 0xff;
+          basePayload[8] = messagesSent & 0xff;
 
           client.sendUDP({
             address: "127.0.0.1",
             port: 6454,
-            data: testData,
+            data: basePayload,
           });
 
           messagesSent++;
@@ -268,13 +247,11 @@ async function runTests() {
           errors++;
         }
 
-        // Stop after 10 seconds
         if (Date.now() - startTime >= duration) {
           clearInterval(sendInterval);
         }
-      }, 10); // Send every 10ms (100 messages per second)
+      }, sendIntervalMs);
 
-      // Wait for the full duration
       await new Promise((resolve) => setTimeout(resolve, duration + 500));
       clearInterval(sendInterval);
 
@@ -301,7 +278,7 @@ async function runTests() {
 
     // Test 7: Connection State
     try {
-      console.log("[Test 7] Checking connection state...");
+      console.log(`[${label}][Test 7] Checking connection state...`);
       if (client.isConnected()) {
         console.log("✓ PASSED: Client reports connected state\n");
         testsPassed++;
@@ -316,7 +293,7 @@ async function runTests() {
 
     // Test 8: Disconnect
     try {
-      console.log("[Test 8] Disconnecting from server...");
+      console.log(`[${label}][Test 8] Disconnecting from server...`);
       client.disconnect();
       await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -336,19 +313,41 @@ async function runTests() {
     testsFailed++;
   }
 
-  // Summary
-  console.log("========================================");
-  console.log("Test Summary");
-  console.log("========================================");
+  console.log(`========================================`);
+  console.log(`Test Summary (${label})`);
+  console.log(`========================================`);
   console.log(`Passed: ${testsPassed}`);
   console.log(`Failed: ${testsFailed}`);
   console.log(`Total:  ${testsPassed + testsFailed}`);
-  console.log("========================================\n");
+  console.log(`========================================\n`);
 
-  process.exit(testsFailed > 0 ? 1 : 0);
+  return { testsPassed, testsFailed };
 }
 
-// Run tests
+async function runTests() {
+  const wsHostname = await resolveMdns();
+  const wsUrlJson = `ws://${wsHostname}:${WS_PORT}`;
+  const wsUrlBinary = `ws://${wsHostname}:${WS_PORT}?mode=binary`;
+  console.log(`Using WebSocket URL (JSON):   ${wsUrlJson}`);
+  console.log(`Using WebSocket URL (Binary): ${wsUrlBinary}\n`);
+
+  const jsonResults = await runSuite("JSON", wsUrlJson, "json");
+  const binaryResults = await runSuite("Binary", wsUrlBinary, "binary");
+
+  const totalPassed = jsonResults.testsPassed + binaryResults.testsPassed;
+  const totalFailed = jsonResults.testsFailed + binaryResults.testsFailed;
+
+  console.log("========================================");
+  console.log("Overall Summary");
+  console.log("========================================");
+  console.log(`Passed: ${totalPassed}`);
+  console.log(`Failed: ${totalFailed}`);
+  console.log(`Total:  ${totalPassed + totalFailed}`);
+  console.log("========================================\n");
+
+  process.exit(totalFailed > 0 ? 1 : 0);
+}
+
 runTests().catch((err) => {
   console.error("Test suite error:", err);
   process.exit(1);

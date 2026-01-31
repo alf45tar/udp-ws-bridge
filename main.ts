@@ -5,9 +5,10 @@ import dgram from "node:dgram";
 import os from "node:os";
 import mdns from "multicast-dns";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const WS_PORT = 8081;
 const UDP_PORT = 6454; // Art-Net standard
+const BINARY_PROTOCOL_VERSION = 1;
 
 console.log(`[Bridge] UDP ↔ WebSocket Bridge v${VERSION}`);
 
@@ -31,7 +32,7 @@ const udpReady = new Promise<void>((resolve, reject) => {
 });
 
 // Track sent messages to filter echoes
-const sentMessages = new Map<string, number>();
+const sentMessages = new Map<number, number>();
 const NO_ECHO_TIMEOUT = 100; // milliseconds
 
 // Cleanup old entries periodically
@@ -106,14 +107,57 @@ console.log(`[Bridge] mDNS hostname published: ${hostname}`);
 // -------------------------
 console.log(`[Bridge] WebSocket bridge running on ws://${hostname}:${WS_PORT}`);
 
+type ClientMode = "json" | "binary";
+
+interface WSMetadata {
+  host: string;
+  mode: ClientMode;
+}
+
+const clients = new Set<WebSocket>();
+
+// Cheap hash for echo-filtering to avoid repeated JSON/string allocations
+const hashBuffer = (buf: Uint8Array | Buffer) => Bun.hash(buf);
+
+const ipToBytes = (ip: string) => ip.split(".").map((octet) => Number(octet) & 0xff);
+
+const bytesToIp = (bytes: Uint8Array, offset: number) =>
+  `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
+
+const buildBinaryFrame = (rinfo: dgram.RemoteInfo, msg: Buffer) => {
+  // Layout: [ver][type][port hi][port lo][a][b][c][d][len hi][len lo][payload...]
+  const header = new Uint8Array(10);
+  header[0] = BINARY_PROTOCOL_VERSION;
+  header[1] = 0x01; // udp-message
+  header[2] = (rinfo.port >> 8) & 0xff;
+  header[3] = rinfo.port & 0xff;
+  const ipParts = ipToBytes(rinfo.address);
+  header.set(ipParts, 4);
+  header[8] = (msg.length >> 8) & 0xff;
+  header[9] = msg.length & 0xff;
+
+  const frame = new Uint8Array(header.length + msg.length);
+  frame.set(header, 0);
+  frame.set(msg, header.length);
+  return frame;
+};
+
 Bun.serve({
   port: WS_PORT,
 
   fetch(req, server) {
-    const url = new URL(req.url);
-    const host = req.headers.get("host") || url.host;
+    const hostHeader = req.headers.get("host") || "localhost";
+    const protocols = (req.headers.get("sec-websocket-protocol") || "")
+      .split(",")
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean);
 
-    if (server.upgrade(req, { data: { host } })) {
+    // Fast path: check protocol first, then cheap string check for query param
+    const wantsBinary =
+      protocols.includes("binary") || req.url.includes("mode=binary");
+    const mode: ClientMode = wantsBinary ? "binary" : "json";
+
+    if (server.upgrade(req, { data: { host: hostHeader, mode } satisfies WSMetadata })) {
       return;
     }
     return new Response("WebSocket only", { status: 400 });
@@ -121,64 +165,62 @@ Bun.serve({
 
   websocket: {
     open(ws) {
-      const connectedHost = ws.data?.host || `${hostname}:${WS_PORT}`;
-      console.log(`[Bridge] Browser connected from ${ws.remoteAddress} to ${connectedHost}`);
+      const meta = ws.data as WSMetadata;
+      const connectedHost = meta?.host || `${hostname}:${WS_PORT}`;
+      console.log(
+        `[Bridge] Browser connected from ${ws.remoteAddress} to ${connectedHost} (${meta.mode} mode)`
+      );
 
-      // UDP → Browser
-      const udpHandler = (msg: Buffer, rinfo: dgram.RemoteInfo) => {
-        // Check if this is an echo message we should filter
-        // Only check the data, not the source address/port (which changes on echo)
-        const msgKey = JSON.stringify({
-          data: [...msg],
-        });
-
-        if (sentMessages.has(msgKey)) {
-          // Don't delete here - let the cleanup timer handle it
-          // This ensures all handlers (if multiple connections) can see the filter
-          return; // Skip this echo
-        }
-
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: "udp-message",
-              address: rinfo.address,
-              port: rinfo.port,
-              data: [...msg], // byte array
-            })
-          );
-        }
-      };
-
-      udpSocket.on("message", udpHandler);
-
-      // Store handler for cleanup
-      ws.data = { udpHandler };
+      clients.add(ws);
     },
 
     async message(ws, raw) {
       await udpReady;
 
-      try {
-        const msg = JSON.parse(raw.toString());
+      const meta = ws.data as WSMetadata;
 
-        // Browser → UDP
-        if (msg.type === "udp-send") {
-          const buf = Buffer.from(msg.data);
-          udpSocket.send(buf, msg.port, msg.address, (err) => {
+      // Binary fast-path
+      if (meta.mode === "binary" && raw instanceof Uint8Array) {
+        const view = raw;
+        if (view.length < 10 || view[0] !== BINARY_PROTOCOL_VERSION) {
+          console.error("[Bridge] Invalid binary frame");
+          return;
+        }
+
+        const type = view[1];
+        const port = (view[2] << 8) | view[3];
+        const addr = bytesToIp(view, 4);
+        const len = (view[8] << 8) | view[9];
+        if (len !== view.length - 10) {
+          console.error("[Bridge] Binary length mismatch");
+          return;
+        }
+
+        const payload = view.subarray(10);
+
+        if (type === 0x02 || type === 0x03) {
+          const hash = type === 0x03 ? hashBuffer(payload) : null;
+          if (hash !== null) {
+            sentMessages.set(hash, Date.now());
+          }
+
+          udpSocket.send(Buffer.from(payload), port, addr, (err) => {
             if (err) console.error("[Bridge] UDP send error:", err);
           });
         }
+        return;
+      }
 
-        // Browser → UDP (no echo)
-        if (msg.type === "udp-send-no-echo") {
+      // JSON path
+      try {
+        const msg = JSON.parse(raw.toString());
+
+        if (msg.type === "udp-send" || msg.type === "udp-send-no-echo") {
           const buf = Buffer.from(msg.data);
-          // Only use data for filtering, not address/port (which changes on echo)
-          const msgKey = JSON.stringify({
-            data: [...buf],
-          });
-          // Register the message BEFORE sending to catch any echoes
-          sentMessages.set(msgKey, Date.now());
+          const hash = msg.type === "udp-send-no-echo" ? hashBuffer(buf) : null;
+          if (hash !== null) {
+            sentMessages.set(hash, Date.now());
+          }
 
           udpSocket.send(buf, msg.port, msg.address, (err) => {
             if (err) console.error("[Bridge] UDP send error:", err);
@@ -191,10 +233,38 @@ Bun.serve({
 
     close(ws) {
       console.log("[Bridge] Browser disconnected");
-
-      if (ws.data?.udpHandler) {
-        udpSocket.off("message", ws.data.udpHandler);
-      }
+      clients.delete(ws);
     },
   },
+});
+
+// UDP → WebSocket broadcast (single handler to avoid per-connection overhead)
+udpSocket.on("message", (msg: Buffer, rinfo: dgram.RemoteInfo) => {
+  const hash = hashBuffer(msg);
+  if (sentMessages.has(hash)) {
+    return; // filtered echo
+  }
+
+  let jsonPayload: string | null = null;
+  let binaryPayload: Uint8Array | null = null;
+
+  for (const client of clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    const meta = client.data as WSMetadata;
+
+    if (meta.mode === "binary") {
+      if (!binaryPayload) binaryPayload = buildBinaryFrame(rinfo, msg);
+      client.send(binaryPayload);
+    } else {
+      if (!jsonPayload) {
+        jsonPayload = JSON.stringify({
+          type: "udp-message",
+          address: rinfo.address,
+          port: rinfo.port,
+          data: [...msg],
+        });
+      }
+      client.send(jsonPayload);
+    }
+  }
 });

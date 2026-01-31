@@ -12,19 +12,24 @@ interface UDPMessage {
 interface SendOptions {
   address?: string;
   port?: number;
-  data: number[] | Buffer;
+  data: number[] | Buffer | Uint8Array;
 }
+
+type ClientMode = "json" | "binary";
 
 class WSClient {
   private ws: WebSocket | null = null;
   private url: string;
+  private mode: ClientMode;
   private messageHandlers: ((msg: UDPMessage) => void)[] = [];
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
+  private intentionalClose = false;
 
-  constructor(url: string = "ws://localhost:8081") {
-    this.url = url;
+  constructor(url: string = "ws://localhost:8081", mode: ClientMode = "json") {
+    this.mode = mode;
+    this.url = this.applyMode(url, mode);
   }
 
   /**
@@ -33,17 +38,48 @@ class WSClient {
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.url);
+        const protocols = this.mode === "binary" ? ["binary"] : undefined;
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore Bun/Web standards accept string | string[] | undefined
+        this.ws = new WebSocket(this.url, protocols);
 
         this.ws.onopen = () => {
           console.log(`[Client] Connected to ${this.url}`);
           this.reconnectAttempts = 0;
+          this.intentionalClose = false;
           resolve();
         };
 
         this.ws.onmessage = (event: MessageEvent) => {
           try {
-            const msg = JSON.parse(event.data);
+            if (this.mode === "binary" && typeof event.data !== "string") {
+              const view = this.asUint8Array(event.data);
+
+              if (view.length < 10) return;
+              if (view[0] !== 1) return; // protocol version
+
+              const type = view[1];
+              if (type !== 0x01) return; // only udp-message from bridge
+
+              const port = (view[2] << 8) | view[3];
+              const address = `${view[4]}.${view[5]}.${view[6]}.${view[7]}`;
+              const len = (view[8] << 8) | view[9];
+              if (len !== view.length - 10) return;
+              const payload = view.subarray(10);
+
+              const msg: UDPMessage = {
+                type: "udp-message",
+                address,
+                port,
+                data: Array.from(payload),
+              };
+
+              this.messageHandlers.forEach((handler) => handler(msg));
+              return;
+            }
+
+            // JSON path
+            const msg = JSON.parse(event.data as string);
             if (msg.type === "udp-message") {
               this.messageHandlers.forEach((handler) => handler(msg));
             }
@@ -59,7 +95,9 @@ class WSClient {
 
         this.ws.onclose = () => {
           console.log("[Client] Disconnected from server");
-          this.attemptReconnect();
+          if (!this.intentionalClose) {
+            this.attemptReconnect();
+          }
         };
       } catch (err) {
         reject(err);
@@ -99,10 +137,18 @@ class WSClient {
       ? options.data
       : Array.from(options.data);
 
+    const address = options.address || "127.0.0.1";
+    const port = options.port || 6454;
+
+    if (this.mode === "binary") {
+      this.ws.send(this.buildBinaryFrame(0x02, address, port, data));
+      return;
+    }
+
     const msg = {
       type: "udp-send",
-      address: options.address || "127.0.0.1",
-      port: options.port || 6454,
+      address,
+      port,
       data,
     };
 
@@ -122,10 +168,18 @@ class WSClient {
       ? options.data
       : Array.from(options.data);
 
+    const address = options.address || "127.0.0.1";
+    const port = options.port || 6454;
+
+    if (this.mode === "binary") {
+      this.ws.send(this.buildBinaryFrame(0x03, address, port, data));
+      return;
+    }
+
     const msg = {
       type: "udp-send-no-echo",
-      address: options.address || "127.0.0.1",
-      port: options.port || 6454,
+      address,
+      port,
       data,
     };
 
@@ -158,9 +212,63 @@ class WSClient {
    */
   disconnect(): void {
     if (this.ws) {
+      this.intentionalClose = true;
       this.ws.close();
       this.ws = null;
     }
+  }
+
+  private applyMode(url: string, mode: ClientMode): string {
+    if (mode !== "binary") return url;
+    const parsed = new URL(url);
+    parsed.searchParams.set("mode", "binary");
+    return parsed.toString();
+  }
+
+  private asUint8Array(data: any): Uint8Array {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    // Bun may deliver Buffer
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    if (typeof Buffer !== "undefined" && data instanceof Buffer) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    throw new Error("Unsupported binary payload");
+  }
+
+  private ipToBytes(address: string): number[] {
+    return address.split(".").map((octet) => Number(octet) & 0xff);
+  }
+
+  private buildBinaryFrame(
+    type: 0x02 | 0x03,
+    address: string,
+    port: number,
+    data: number[] | Uint8Array | Buffer
+  ): Uint8Array {
+    const payload =
+      data instanceof Uint8Array
+        ? data
+        : Array.isArray(data)
+          ? new Uint8Array(data)
+          : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const header = new Uint8Array(10);
+    header[0] = 1; // version
+    header[1] = type;
+    header[2] = (port >> 8) & 0xff;
+    header[3] = port & 0xff;
+    header.set(this.ipToBytes(address), 4);
+    header[8] = (payload.length >> 8) & 0xff;
+    header[9] = payload.length & 0xff;
+
+    const frame = new Uint8Array(header.length + payload.length);
+    frame.set(header, 0);
+    frame.set(payload, header.length);
+    return frame;
   }
 }
 

@@ -63,6 +63,17 @@ This script starts the bridge, runs the client test, then stops the server. Requ
 
 Ports are fixed in [main.ts](main.ts#L9-L10): `WS_PORT = 8081`, `UDP_PORT = 6454`. Edit those constants if you need different ports.
 
+### High-performance binary mode
+- Add `?mode=binary` to your WebSocket URL (e.g. `ws://udp-ws-bridge.local:8081?mode=binary`) **or** use WebSocket subprotocol `binary`.
+- Frames are binary (no JSON). Layout: `[ver=1][type][port hi][port lo][a][b][c][d][len hi][len lo][payload...]`.
+  - `type`: `0x01` = UDP → WS, `0x02` = WS → UDP, `0x03` = WS → UDP (no echo).
+  - `port`: UDP port (uint16, big-endian).
+  - `a..d`: IPv4 address bytes.
+  - `len`: payload length (uint16, big-endian).
+  - `payload`: raw UDP bytes.
+- For no-echo from WebSocket, send type `0x03`.
+- JSON mode remains the default for compatibility.
+
 ## Build executables manually
 Compile self-contained binaries for your platforms.
 
