@@ -38,7 +38,7 @@ jobs:
       TARGET: ${{ matrix.target }}
       PLATFORM: ${{ contains(matrix.target, 'windows') && 'windows-x64' || (contains(matrix.target, 'linux') && 'linux-x64' || (contains(matrix.target, 'darwin') && (contains(matrix.target, 'arm64') && 'darwin-arm64' || 'darwin-x64') )) }}
       VERSION: ${{ github.event.inputs.tag }}
-      BIN_EXT: ${{ contains(matrix.target, 'windows') && '.exe' || '' }}
+      BIN_EXT: ${{ contains(matrix.target, 'windows') && '.exe' || (contains(matrix.target, 'darwin') && '.command' || '') }}
       OUTFILE: udp-ws-bridge
 
     steps:

@@ -20,7 +20,7 @@ Browser (WebSocket) ⇄ Bridge (WS ⇄ UDP) ⇄ Art-Net device (UDP 6454)
 Direct links to latest release (per platform):
 - [Linux (x64)](https://github.com/alf45tar/udp-ws-bridge/releases/latest/download/udp-ws-bridge-linux-x64.zip)
 - [Windows (x64)](https://github.com/alf45tar/udp-ws-bridge/releases/latest/download/udp-ws-bridge-windows-x64.zip)
-- [macOS (x64)](https://github.com/alf45tar/udp-ws-bridge/releases/latest/download/udp-ws-bridge-darwin-x64.zip)
+- [macOS (x64)](https://github.com/alf45tar/udp-ws-bridge/releases/latest/download/udp-ws-bridge-darwin-x64.zip) — requires macOS 13 (Ventura) or later.
 - [macOS (arm64)](https://github.com/alf45tar/udp-ws-bridge/releases/latest/download/udp-ws-bridge-darwin-arm64.zip)
 
 Or visit the Releases page for all assets.
@@ -78,12 +78,12 @@ bun build main.ts --compile --target=bun-windows-x64-modern --outfile dist/udp-w
 
 macOS (x64):
 ```bash
-bun build main.ts --compile --target=bun-darwin-x64 --outfile dist/udp-ws-bridge
+bun build main.ts --compile --target=bun-darwin-x64 --outfile dist/udp-ws-bridge.command
 ```
 
 macOS (arm64):
 ```bash
-bun build main.ts --compile --target=bun-darwin-arm64 --outfile dist/udp-ws-bridge
+bun build main.ts --compile --target=bun-darwin-arm64 --outfile dist/udp-ws-bridge.command
 ```
 
 ## How it works

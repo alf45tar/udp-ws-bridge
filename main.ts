@@ -5,7 +5,7 @@ import dgram from "node:dgram";
 import os from "node:os";
 import mdns from "multicast-dns";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const WS_PORT = 8081;
 const UDP_PORT = 6454; // Art-Net standard
 
